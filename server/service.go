@@ -80,9 +80,14 @@ func (s *Server) Register(rcvr interface{}, metadata string) error {
 // RegisterName is like Register but uses the provided name for the type
 // instead of the receiver's concrete type.
 func (s *Server) RegisterName(name string, rcvr interface{}, metadata string) error {
-	s.Plugins.DoRegister(name, rcvr, metadata)
 	_, err := s.register(rcvr, name, true)
-	return err
+	if err != nil {
+		return err
+	}
+	if s.Plugins == nil {
+		s.Plugins = &pluginContainer{}
+	}
+	return s.Plugins.DoRegister(name, rcvr, metadata)
 }
 
 // RegisterFunction publishes a function that satisfy the following conditions:
@@ -106,7 +111,7 @@ func (s *Server) RegisterFunctionName(servicePath string, name string, fn interf
 	if err != nil {
 		return err
 	}
-	
+
 	return s.Plugins.DoRegisterFunction(servicePath, name, fn, metadata)
 }
 
@@ -322,7 +327,7 @@ func (s *Server) UnregisterAll() error {
 func (s *service) call(ctx context.Context, mtype *methodType, argv, replyv reflect.Value) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			var buf = make([]byte, 4096)
+			buf := make([]byte, 4096)
 			n := runtime.Stack(buf, false)
 			buf = buf[:n]
 
@@ -350,7 +355,7 @@ func (s *service) call(ctx context.Context, mtype *methodType, argv, replyv refl
 func (s *service) callForFunction(ctx context.Context, ft *functionType, argv, replyv reflect.Value) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			//log.Errorf("failed to invoke service: %v, stacks: %s", r, string(debug.Stack()))
+			// log.Errorf("failed to invoke service: %v, stacks: %s", r, string(debug.Stack()))
 			err = fmt.Errorf("[service internal error]: %v, function: %s, argv: %+v",
 				r, runtime.FuncForPC(ft.fn.Pointer()), argv.Interface())
 			log.Handle(err)

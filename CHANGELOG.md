@@ -1,6 +1,16 @@
 # [rpcx](http://rpcx.io)
 
-## 6.0 (developing)
+## 7.0 (developing)
+- move etcd support to github.com/rpcxio/rpcx-etcd
+- Broken API: NewXXXDiscovery returns error instead of panic
+- support AdvertiseAddr in FileTransfer
+- support Auth for OneClientPool
+- support Auth for XClientPool
+- Broken API: add meta parameter for SendFile/DownloadFile 
+- support streaming between server side and client side
+- support DNS as service discovery
+
+## 6.0 
 
 - support reflection
 - add kubernetes config example
@@ -10,9 +20,14 @@
 - avoid duplicated client creation
 - add SelectNodePlugin that can interrupt the Select method
 - support TcpCopy by TeePlugin
+- support reuseport for http invoke
+- return reply even in case of server errors
 - Change two methods' name of client plugin!
 - Broken API: add error parameter in `PreWriteResponse`(#486)
 - Broken API: change ReadTimeout/WriteTimeout to IdleTimeout
+- Support passing Deadline of client contexts to server side
+- remove InprocessClient plugin
+- use heartbeat/tcp_keepalive to avoid client hanging
 
 
 ## 5.0 

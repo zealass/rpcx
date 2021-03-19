@@ -6,40 +6,16 @@ vet:
 	go vet ./...
 
 tools:
-	go get honnef.co/go/tools/cmd/staticcheck
-	go get honnef.co/go/tools/cmd/gosimple
-	go get honnef.co/go/tools/cmd/unused
-	go get github.com/gordonklaus/ineffassign
-	go get github.com/fzipp/gocyclo
+	go get github.com/golangci/golangci-lint/cmd/golangci-lint
 	go get github.com/golang/lint/golint
-	go get github.com/alexkohler/prealloc
 	go get github.com/axw/gocov/gocov
-	go get -u gopkg.in/matm/v1/gocov-html
+	go get github.com/matm/gocov-html
 
-gometalinter:
-	gometalinter --enable-all ./...
+golangci-lint:
+	golangci-lint run -D errcheck --build-tags 'quic kcp'
+
 lint:
 	golint ./...
-
-staticcheck:
-	staticcheck -ignore "$(shell cat .checkignore)" ./...
-
-gosimple:
-	gosimple -ignore "$(shell cat .gosimpleignore)" ./...
-
-unused:
-	unused ./...
-
-ineffassign:
-	ineffassign .
-
-gocyclo:
-	gocyclo -over 20 $(shell find . -name "*.go" |egrep -v "_testutils/*|vendor/*|pb\.go|_test\.go")
-
-prealloc:
-	prealloc ./...
-
-check: staticcheck gosimple ineffassign
 
 doc:
 	godoc -http=:6060
@@ -54,13 +30,13 @@ build:
 	go build ./...
 
 build-all:
-	go build -tags "kcp quic ping utp" ./...
+	go build -tags "kcp quic" ./...
 
 test:
-	go test -race -tags "kcp quic ping utp" ./...
+	go test -race -tags "kcp quic" ./...
 
 cover:
-	gocov test ./... | gocov-html > cover.html
+	gocov test -tags "kcp quic" ./... | gocov-html > cover.html
 	open cover.html
 
 check-libs:

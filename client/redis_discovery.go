@@ -5,10 +5,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/abronan/valkeyrie"
-	"github.com/abronan/valkeyrie/store"
+	"github.com/rpcxio/libkv"
+	"github.com/rpcxio/libkv/store"
+	"github.com/rpcxio/libkv/store/redis"
 	"github.com/smallnest/rpcx/log"
-	"github.com/smallnest/valkeyrie/store/redis"
 )
 
 func init() {
@@ -20,6 +20,7 @@ func init() {
 type RedisDiscovery struct {
 	basePath string
 	kv       store.Store
+	pairsMu  sync.RWMutex
 	pairs    []*KVPair
 	chans    []chan []*KVPair
 	mu       sync.Mutex
@@ -33,18 +34,18 @@ type RedisDiscovery struct {
 }
 
 // NewRedisDiscovery returns a new RedisDiscovery.
-func NewRedisDiscovery(basePath string, servicePath string, etcdAddr []string, options *store.Config) ServiceDiscovery {
-	kv, err := valkeyrie.NewStore(store.REDIS, etcdAddr, options)
+func NewRedisDiscovery(basePath string, servicePath string, etcdAddr []string, options *store.Config) (ServiceDiscovery, error) {
+	kv, err := libkv.NewStore(store.REDIS, etcdAddr, options)
 	if err != nil {
 		log.Infof("cannot create store: %v", err)
-		panic(err)
+		return nil, err
 	}
 
 	return NewRedisDiscoveryStore(basePath+"/"+servicePath, kv)
 }
 
 // NewRedisDiscoveryStore return a new RedisDiscovery with specified store.
-func NewRedisDiscoveryStore(basePath string, kv store.Store) ServiceDiscovery {
+func NewRedisDiscoveryStore(basePath string, kv store.Store) (ServiceDiscovery, error) {
 	if len(basePath) > 1 && strings.HasSuffix(basePath, "/") {
 		basePath = basePath[:len(basePath)-1]
 	}
@@ -52,7 +53,7 @@ func NewRedisDiscoveryStore(basePath string, kv store.Store) ServiceDiscovery {
 	d := &RedisDiscovery{basePath: basePath, kv: kv}
 	d.stopCh = make(chan struct{})
 
-	ps, err := kv.List(basePath, nil)
+	ps, err := kv.List(basePath)
 	if err != nil {
 		log.Infof("cannot get services of from registry: %v, err: %v", basePath, err)
 		panic(err)
@@ -85,30 +86,32 @@ func NewRedisDiscoveryStore(basePath string, kv store.Store) ServiceDiscovery {
 		}
 		pairs = append(pairs, pair)
 	}
+	d.pairsMu.Lock()
 	d.pairs = pairs
+	d.pairsMu.Unlock()
 	d.RetriesAfterWatchFailed = -1
 
 	go d.watch()
-	return d
+	return d, nil
 }
 
 // NewRedisDiscoveryTemplate returns a new RedisDiscovery template.
-func NewRedisDiscoveryTemplate(basePath string, etcdAddr []string, options *store.Config) ServiceDiscovery {
+func NewRedisDiscoveryTemplate(basePath string, etcdAddr []string, options *store.Config) (ServiceDiscovery, error) {
 	if len(basePath) > 1 && strings.HasSuffix(basePath, "/") {
 		basePath = basePath[:len(basePath)-1]
 	}
 
-	kv, err := valkeyrie.NewStore(store.REDIS, etcdAddr, options)
+	kv, err := libkv.NewStore(store.REDIS, etcdAddr, options)
 	if err != nil {
 		log.Infof("cannot create store: %v", err)
-		panic(err)
+		return nil, err
 	}
 
-	return &RedisDiscovery{basePath: basePath, kv: kv}
+	return NewRedisDiscoveryStore(basePath, kv)
 }
 
 // Clone clones this ServiceDiscovery with new servicePath.
-func (d *RedisDiscovery) Clone(servicePath string) ServiceDiscovery {
+func (d *RedisDiscovery) Clone(servicePath string) (ServiceDiscovery, error) {
 	return NewRedisDiscoveryStore(d.basePath+"/"+servicePath, d.kv)
 }
 
@@ -119,6 +122,9 @@ func (d *RedisDiscovery) SetFilter(filter ServiceDiscoveryFilter) {
 
 // GetServices returns the servers
 func (d *RedisDiscovery) GetServices() []*KVPair {
+	d.pairsMu.RLock()
+	defer d.pairsMu.RUnlock()
+
 	return d.pairs
 }
 
@@ -160,7 +166,7 @@ func (d *RedisDiscovery) watch() {
 
 		retry := d.RetriesAfterWatchFailed
 		for d.RetriesAfterWatchFailed < 0 || retry >= 0 {
-			c, err = d.kv.WatchTree(d.basePath, nil, nil)
+			c, err = d.kv.WatchTree(d.basePath, nil)
 			if err != nil {
 				if d.RetriesAfterWatchFailed > 0 {
 					retry--
@@ -224,7 +230,9 @@ func (d *RedisDiscovery) watch() {
 					}
 					pairs = append(pairs, pair)
 				}
+				d.pairsMu.Lock()
 				d.pairs = pairs
+				d.pairsMu.Unlock()
 
 				d.mu.Lock()
 				for _, ch := range d.chans {

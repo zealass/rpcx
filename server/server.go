@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -79,6 +80,7 @@ type Server struct {
 
 	inShutdown int32
 	onShutdown []func(s *Server)
+	onRestart  []func(s *Server)
 
 	// TLSConfig for creating tls tcp connection.
 	tlsConfig *tls.Config
@@ -110,6 +112,9 @@ func NewServer(options ...OptionFn) *Server {
 		op(s)
 	}
 
+	if s.options["TCPKeepAlivePeriod"] == nil {
+		s.options["TCPKeepAlivePeriod"] = 3 * time.Minute
+	}
 	return s
 }
 
@@ -170,24 +175,38 @@ func (s *Server) getDoneChan() <-chan struct{} {
 	return s.doneChan
 }
 
+// startShutdownListener start a new goroutine to notify SIGTERM
+// and SIGHUP signals and handle them gracefully
 func (s *Server) startShutdownListener() {
 	go func(s *Server) {
 		log.Info("server pid:", os.Getpid())
-		c := make(chan os.Signal, 1)
-		signal.Notify(c, syscall.SIGTERM)
-		si := <-c
-		if si.String() == "terminated" {
-			if nil != s.onShutdown && len(s.onShutdown) > 0 {
-				for _, sd := range s.onShutdown {
-					sd(s)
-				}
-			}
+
+		// channel to receive notifications of SIGTERM and SIGHUP
+		ch := make(chan os.Signal, 1)
+		signal.Notify(ch, syscall.SIGTERM, syscall.SIGHUP)
+
+		// custom functions to handle signal SIGTERM and SIGHUP
+		var customFuncs []func(s *Server)
+
+		switch <-ch {
+		case syscall.SIGTERM:
+			customFuncs = append(s.onShutdown, func(s *Server) {
+				s.Shutdown(context.Background())
+			})
+		case syscall.SIGHUP:
+			customFuncs = append(s.onRestart, func(s *Server) {
+				s.Restart(context.Background())
+			})
+		}
+
+		for _, fn := range customFuncs {
+			fn(s)
 		}
 	}(s)
 }
 
 // Serve starts and listens RPC requests.
-// It is blocked until receiving connectings from clients.
+// It is blocked until receiving connections from clients.
 func (s *Server) Serve(network, address string) (err error) {
 	s.startShutdownListener()
 	var ln net.Listener
@@ -208,7 +227,7 @@ func (s *Server) Serve(network, address string) (err error) {
 }
 
 // ServeListener listens RPC requests.
-// It is blocked until receiving connectings from clients.
+// It is blocked until receiving connections from clients.
 func (s *Server) ServeListener(network string, ln net.Listener) (err error) {
 	s.startShutdownListener()
 	if network == "http" {
@@ -266,9 +285,12 @@ func (s *Server) serveListener(ln net.Listener) error {
 		tempDelay = 0
 
 		if tc, ok := conn.(*net.TCPConn); ok {
-			tc.SetKeepAlive(true)
-			tc.SetKeepAlivePeriod(3 * time.Minute)
-			tc.SetLinger(10)
+			period := s.options["TCPKeepAlivePeriod"]
+			if period != nil {
+				tc.SetKeepAlive(true)
+				tc.SetKeepAlivePeriod(period.(time.Duration))
+				tc.SetLinger(10)
+			}
 		}
 
 		conn, ok := s.Plugins.DoPostConnAccept(conn)
@@ -414,18 +436,23 @@ func (s *Server) serveConn(conn net.Conn) {
 			}
 
 			resMetadata := make(map[string]string)
-			newCtx := share.WithLocalValue(share.WithLocalValue(ctx, share.ReqMetaDataKey, req.Metadata),
+			ctx = share.WithLocalValue(share.WithLocalValue(ctx, share.ReqMetaDataKey, req.Metadata),
 				share.ResMetaDataKey, resMetadata)
 
-			s.Plugins.DoPreHandleRequest(newCtx, req)
+			cancelFunc := parseServerTimeout(ctx, req)
+			if cancelFunc != nil {
+				defer cancelFunc()
+			}
 
-			res, err := s.handleRequest(newCtx, req)
+			s.Plugins.DoPreHandleRequest(ctx, req)
+
+			res, err := s.handleRequest(ctx, req)
 
 			if err != nil {
 				log.Warnf("rpcx: failed to handle request: %v", err)
 			}
 
-			s.Plugins.DoPreWriteResponse(newCtx, req, res, err)
+			s.Plugins.DoPreWriteResponse(ctx, req, res, err)
 			if !req.IsOneway() {
 				if len(resMetadata) > 0 { //copy meta in context to request
 					meta := res.Metadata
@@ -447,12 +474,32 @@ func (s *Server) serveConn(conn net.Conn) {
 				conn.Write(*data)
 				protocol.PutData(data)
 			}
-			s.Plugins.DoPostWriteResponse(newCtx, req, res, err)
+			s.Plugins.DoPostWriteResponse(ctx, req, res, err)
 
 			protocol.FreeMsg(req)
 			protocol.FreeMsg(res)
 		}()
 	}
+}
+
+func parseServerTimeout(ctx *share.Context, req *protocol.Message) context.CancelFunc {
+	if req == nil || req.Metadata == nil {
+		return nil
+	}
+
+	st := req.Metadata[share.ServerTimeout]
+	if st == "" {
+		return nil
+	}
+
+	timeout, err := strconv.ParseInt(st, 10, 64)
+	if err != nil {
+		return nil
+	}
+
+	newCtx, cancel := context.WithTimeout(ctx.Context, time.Duration(timeout)*time.Millisecond)
+	ctx.Context = newCtx
+	return cancel
 }
 
 func isShutdown(s *Server) bool {
@@ -549,6 +596,15 @@ func (s *Server) handleRequest(ctx context.Context, req *protocol.Message) (res 
 
 	argsReplyPools.Put(mtype.ArgType, argv)
 	if err != nil {
+		if replyv != nil {
+			data, err := codec.Encode(replyv)
+			argsReplyPools.Put(mtype.ReplyType, replyv)
+			if err != nil {
+				return handleError(res, err)
+
+			}
+			res.Payload = data
+		}
 		argsReplyPools.Put(mtype.ReplyType, replyv)
 		return handleError(res, err)
 	}
@@ -691,6 +747,13 @@ func (s *Server) RegisterOnShutdown(f func(s *Server)) {
 	s.mu.Unlock()
 }
 
+// RegisterOnRestart registers a function to call on Restart.
+func (s *Server) RegisterOnRestart(f func(s *Server)) {
+	s.mu.Lock()
+	s.onRestart = append(s.onRestart, f)
+	s.mu.Unlock()
+}
+
 var shutdownPollInterval = 1000 * time.Millisecond
 
 // Shutdown gracefully shuts down the server without interrupting any
@@ -776,12 +839,10 @@ func (s *Server) startProcess() (int, error) {
 
 	// Pass on the environment and replace the old count key with the new one.
 	var env []string
-	for _, v := range os.Environ() {
-		env = append(env, v)
-	}
+	env = append(env, os.Environ()...)
 
 	var originalWD, _ = os.Getwd()
-	allFiles := append([]*os.File{os.Stdin, os.Stdout, os.Stderr})
+	allFiles := []*os.File{os.Stdin, os.Stdout, os.Stderr}
 	process, err := os.StartProcess(argv0, os.Args, &os.ProcAttr{
 		Dir:   originalWD,
 		Env:   env,

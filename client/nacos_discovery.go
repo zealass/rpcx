@@ -26,9 +26,10 @@ type NacosDiscovery struct {
 
 	namingClient naming_client.INamingClient
 
-	pairs []*KVPair
-	chans []chan []*KVPair
-	mu    sync.Mutex
+	pairsMu sync.RWMutex
+	pairs   []*KVPair
+	chans   []chan []*KVPair
+	mu      sync.Mutex
 
 	filter                  ServiceDiscoveryFilter
 	RetriesAfterWatchFailed int
@@ -37,7 +38,7 @@ type NacosDiscovery struct {
 }
 
 // NewNacosDiscovery returns a new NacosDiscovery.
-func NewNacosDiscovery(servicePath string, cluster string, clientConfig constant.ClientConfig, serverConfig []constant.ServerConfig) ServiceDiscovery {
+func NewNacosDiscovery(servicePath string, cluster string, clientConfig constant.ClientConfig, serverConfig []constant.ServerConfig) (ServiceDiscovery, error) {
 	d := &NacosDiscovery{
 		servicePath:  servicePath,
 		Cluster:      cluster,
@@ -51,14 +52,14 @@ func NewNacosDiscovery(servicePath string, cluster string, clientConfig constant
 	})
 	if err != nil {
 		log.Errorf("failed to create NacosDiscovery: %v", err)
-		return nil
+		return nil, err
 	}
 
 	d.namingClient = namingClient
 
 	d.fetch()
 	go d.watch()
-	return d
+	return d, nil
 }
 
 func NewNacosDiscoveryWithClient(servicePath string, cluster string, namingClient naming_client.INamingClient) ServiceDiscovery {
@@ -79,12 +80,11 @@ func (d *NacosDiscovery) fetch() {
 		ServiceName: d.servicePath,
 		Clusters:    []string{d.Cluster},
 	})
-
 	if err != nil {
 		log.Errorf("failed to get service %s: %v", d.servicePath, err)
 		return
 	}
-	var pairs = make([]*KVPair, 0, len(service.Hosts))
+	pairs := make([]*KVPair, 0, len(service.Hosts))
 	for _, inst := range service.Hosts {
 		network := inst.Metadata["network"]
 		ip := inst.Ip
@@ -97,20 +97,13 @@ func (d *NacosDiscovery) fetch() {
 		pairs = append(pairs, pair)
 	}
 
+	d.pairsMu.Lock()
 	d.pairs = pairs
-}
-
-// NewNacosDiscoveryTemplate returns a new NacosDiscovery template.
-func NewNacosDiscoveryTemplate(cluster string, clientConfig constant.ClientConfig, serverConfig []constant.ServerConfig) ServiceDiscovery {
-	return &NacosDiscovery{
-		Cluster:      cluster,
-		ClientConfig: clientConfig,
-		ServerConfig: serverConfig,
-	}
+	d.pairsMu.Unlock()
 }
 
 // Clone clones this ServiceDiscovery with new servicePath.
-func (d *NacosDiscovery) Clone(servicePath string) ServiceDiscovery {
+func (d *NacosDiscovery) Clone(servicePath string) (ServiceDiscovery, error) {
 	return NewNacosDiscovery(servicePath, d.Cluster, d.ClientConfig, d.ServerConfig)
 }
 
@@ -121,6 +114,9 @@ func (d *NacosDiscovery) SetFilter(filter ServiceDiscoveryFilter) {
 
 // GetServices returns the servers
 func (d *NacosDiscovery) GetServices() []*KVPair {
+	d.pairsMu.RLock()
+	defer d.pairsMu.RUnlock()
+
 	return d.pairs
 }
 
@@ -155,7 +151,7 @@ func (d *NacosDiscovery) watch() {
 		ServiceName: d.servicePath,
 		Clusters:    []string{d.Cluster},
 		SubscribeCallback: func(services []model.SubscribeService, err error) {
-			var pairs = make([]*KVPair, 0, len(services))
+			pairs := make([]*KVPair, 0, len(services))
 			for _, inst := range services {
 				network := inst.Metadata["network"]
 				ip := inst.Ip
@@ -167,7 +163,9 @@ func (d *NacosDiscovery) watch() {
 				}
 				pairs = append(pairs, pair)
 			}
+			d.pairsMu.Lock()
 			d.pairs = pairs
+			d.pairsMu.Unlock()
 
 			d.mu.Lock()
 			for _, ch := range d.chans {
@@ -188,7 +186,6 @@ func (d *NacosDiscovery) watch() {
 	}
 
 	err := d.namingClient.Subscribe(param)
-
 	// if failed to Subscribe, retry
 	if err != nil {
 		var tempDelay time.Duration
@@ -214,7 +211,6 @@ func (d *NacosDiscovery) watch() {
 			break
 		}
 	}
-
 }
 
 func (d *NacosDiscovery) Close() {

@@ -10,22 +10,23 @@ import (
 // MultipleServersDiscovery is a multiple servers service discovery.
 // It always returns the current servers and uses can change servers dynamically.
 type MultipleServersDiscovery struct {
-	pairs []*KVPair
-	chans []chan []*KVPair
+	pairsMu sync.RWMutex
+	pairs   []*KVPair
+	chans   []chan []*KVPair
 
 	mu sync.Mutex
 }
 
 // NewMultipleServersDiscovery returns a new MultipleServersDiscovery.
-func NewMultipleServersDiscovery(pairs []*KVPair) ServiceDiscovery {
+func NewMultipleServersDiscovery(pairs []*KVPair) (ServiceDiscovery, error) {
 	return &MultipleServersDiscovery{
 		pairs: pairs,
-	}
+	}, nil
 }
 
 // Clone clones this ServiceDiscovery with new servicePath.
-func (d *MultipleServersDiscovery) Clone(servicePath string) ServiceDiscovery {
-	return d
+func (d *MultipleServersDiscovery) Clone(servicePath string) (ServiceDiscovery, error) {
+	return d, nil
 }
 
 // SetFilter sets the filer.
@@ -34,6 +35,9 @@ func (d *MultipleServersDiscovery) SetFilter(filter ServiceDiscoveryFilter) {
 
 // GetServices returns the configured server
 func (d *MultipleServersDiscovery) GetServices() []*KVPair {
+	d.pairsMu.RLock()
+	defer d.pairsMu.RUnlock()
+
 	return d.pairs
 }
 
@@ -81,6 +85,10 @@ func (d *MultipleServersDiscovery) Update(pairs []*KVPair) {
 			}
 		}()
 	}
+
+	d.pairsMu.Lock()
+	d.pairs = pairs
+	d.pairsMu.Unlock()
 }
 
 func (d *MultipleServersDiscovery) Close() {

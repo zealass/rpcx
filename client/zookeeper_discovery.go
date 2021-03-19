@@ -5,9 +5,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/docker/libkv"
-	"github.com/docker/libkv/store"
-	"github.com/docker/libkv/store/zookeeper"
+	"github.com/rpcxio/libkv"
+	"github.com/rpcxio/libkv/store"
+	"github.com/rpcxio/libkv/store/zookeeper"
 	"github.com/smallnest/rpcx/log"
 )
 
@@ -20,6 +20,7 @@ func init() {
 type ZookeeperDiscovery struct {
 	basePath string
 	kv       store.Store
+	pairsMu  sync.RWMutex
 	pairs    []*KVPair
 	chans    []chan []*KVPair
 	mu       sync.Mutex
@@ -33,7 +34,7 @@ type ZookeeperDiscovery struct {
 }
 
 // NewZookeeperDiscovery returns a new ZookeeperDiscovery.
-func NewZookeeperDiscovery(basePath string, servicePath string, zkAddr []string, options *store.Config) ServiceDiscovery {
+func NewZookeeperDiscovery(basePath string, servicePath string, zkAddr []string, options *store.Config) (ServiceDiscovery, error) {
 	if basePath[0] == '/' {
 		basePath = basePath[1:]
 	}
@@ -45,14 +46,14 @@ func NewZookeeperDiscovery(basePath string, servicePath string, zkAddr []string,
 	kv, err := libkv.NewStore(store.ZK, zkAddr, options)
 	if err != nil {
 		log.Infof("cannot create store: %v", err)
-		panic(err)
+		return nil, err
 	}
 
 	return NewZookeeperDiscoveryWithStore(basePath+"/"+servicePath, kv)
 }
 
 // NewZookeeperDiscoveryWithStore returns a new ZookeeperDiscovery with specified store.
-func NewZookeeperDiscoveryWithStore(basePath string, kv store.Store) ServiceDiscovery {
+func NewZookeeperDiscoveryWithStore(basePath string, kv store.Store) (ServiceDiscovery, error) {
 	if basePath[0] == '/' {
 		basePath = basePath[1:]
 	}
@@ -62,7 +63,7 @@ func NewZookeeperDiscoveryWithStore(basePath string, kv store.Store) ServiceDisc
 	ps, err := kv.List(basePath)
 	if err != nil {
 		log.Infof("cannot get services of %s from registry: %v, err: %v", basePath, err)
-		panic(err)
+		return nil, err
 	}
 
 	pairs := make([]*KVPair, 0, len(ps))
@@ -73,15 +74,17 @@ func NewZookeeperDiscoveryWithStore(basePath string, kv store.Store) ServiceDisc
 		}
 		pairs = append(pairs, pair)
 	}
+	d.pairsMu.Lock()
 	d.pairs = pairs
+	d.pairsMu.Unlock()
 	d.RetriesAfterWatchFailed = -1
 	go d.watch()
 
-	return d
+	return d, nil
 }
 
 // NewZookeeperDiscoveryTemplate returns a new ZookeeperDiscovery template.
-func NewZookeeperDiscoveryTemplate(basePath string, zkAddr []string, options *store.Config) ServiceDiscovery {
+func NewZookeeperDiscoveryTemplate(basePath string, zkAddr []string, options *store.Config) (ServiceDiscovery, error) {
 	if basePath[0] == '/' {
 		basePath = basePath[1:]
 	}
@@ -93,14 +96,14 @@ func NewZookeeperDiscoveryTemplate(basePath string, zkAddr []string, options *st
 	kv, err := libkv.NewStore(store.ZK, zkAddr, options)
 	if err != nil {
 		log.Infof("cannot create store: %v", err)
-		panic(err)
+		return nil, err
 	}
 
-	return &ZookeeperDiscovery{basePath: basePath, kv: kv}
+	return NewZookeeperDiscoveryWithStore(basePath, kv)
 }
 
 // Clone clones this ServiceDiscovery with new servicePath.
-func (d *ZookeeperDiscovery) Clone(servicePath string) ServiceDiscovery {
+func (d *ZookeeperDiscovery) Clone(servicePath string) (ServiceDiscovery, error) {
 	return NewZookeeperDiscoveryWithStore(d.basePath+"/"+servicePath, d.kv)
 }
 
@@ -111,6 +114,9 @@ func (d *ZookeeperDiscovery) SetFilter(filter ServiceDiscoveryFilter) {
 
 // GetServices returns the servers
 func (d *ZookeeperDiscovery) GetServices() []*KVPair {
+	d.pairsMu.RLock()
+	defer d.pairsMu.RUnlock()
+
 	return d.pairs
 }
 
@@ -199,7 +205,9 @@ func (d *ZookeeperDiscovery) watch() {
 					}
 					pairs = append(pairs, pair)
 				}
+				d.pairsMu.Lock()
 				d.pairs = pairs
+				d.pairsMu.Unlock()
 
 				d.mu.Lock()
 				for _, ch := range d.chans {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"sync"
 
 	"github.com/smallnest/rpcx/share"
@@ -140,10 +141,15 @@ func (c *OneClient) newXClient(servicePath string) (xclient XClient, err error) 
 		}
 	}()
 
+	d, err := c.discovery.Clone(servicePath)
+	if err != nil {
+		return nil, err
+	}
+
 	if c.serverMessageChan == nil {
-		xclient = NewXClient(servicePath, c.failMode, c.selectMode, c.discovery.Clone(servicePath), c.option)
+		xclient = NewXClient(servicePath, c.failMode, c.selectMode, d, c.option)
 	} else {
-		xclient = NewBidirectionalXClient(servicePath, c.failMode, c.selectMode, c.discovery.Clone(servicePath), c.option, c.serverMessageChan)
+		xclient = NewBidirectionalXClient(servicePath, c.failMode, c.selectMode, d, c.option, c.serverMessageChan)
 	}
 
 	if c.Plugins != nil {
@@ -263,7 +269,7 @@ func (c *OneClient) Fork(ctx context.Context, servicePath string, serviceMethod 
 	return xclient.Fork(ctx, serviceMethod, args, reply)
 }
 
-func (c *OneClient) SendFile(ctx context.Context, fileName string, rateInBytesPerSecond int64) error {
+func (c *OneClient) SendFile(ctx context.Context, fileName string, rateInBytesPerSecond int64, meta map[string]string) error {
 	c.mu.RLock()
 	xclient := c.xclients[share.SendFileServiceName]
 	c.mu.RUnlock()
@@ -282,10 +288,10 @@ func (c *OneClient) SendFile(ctx context.Context, fileName string, rateInBytesPe
 		}
 	}
 
-	return xclient.SendFile(ctx, fileName, rateInBytesPerSecond)
+	return xclient.SendFile(ctx, fileName, rateInBytesPerSecond, meta)
 }
 
-func (c *OneClient) DownloadFile(ctx context.Context, requestFileName string, saveTo io.Writer) error {
+func (c *OneClient) DownloadFile(ctx context.Context, requestFileName string, saveTo io.Writer, meta map[string]string) error {
 	c.mu.RLock()
 	xclient := c.xclients[share.SendFileServiceName]
 	c.mu.RUnlock()
@@ -304,7 +310,29 @@ func (c *OneClient) DownloadFile(ctx context.Context, requestFileName string, sa
 		}
 	}
 
-	return xclient.DownloadFile(ctx, requestFileName, saveTo)
+	return xclient.DownloadFile(ctx, requestFileName, saveTo, meta)
+}
+
+func (c *OneClient) Stream(ctx context.Context, meta map[string]string) (net.Conn, error) {
+	c.mu.RLock()
+	xclient := c.xclients[share.StreamServiceName]
+	c.mu.RUnlock()
+
+	if xclient == nil {
+		var err error
+		c.mu.Lock()
+		xclient = c.xclients[share.StreamServiceName]
+		if xclient == nil {
+			xclient, err = c.newXClient(share.StreamServiceName)
+			c.xclients[share.StreamServiceName] = xclient
+		}
+		c.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return xclient.Stream(ctx, meta)
 }
 
 // Close closes all xclients and its underlying connnections to services.

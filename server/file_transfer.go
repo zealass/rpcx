@@ -8,10 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/smallnest/rpcx/share"
-
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/smallnest/rpcx/log"
+	"github.com/smallnest/rpcx/share"
 )
 
 // FileTransferHandler handles uploading file. Must close the connection after it finished.
@@ -35,6 +34,7 @@ type downloadTokenInfo struct {
 // Clients will invokes this service to get the token and send the token and the file to this port.
 type FileTransfer struct {
 	Addr                string
+	AdvertiseAddr       string
 	handler             FileTransferHandler
 	downloadFileHandler DownloadFileHandler
 	cachedTokens        *lru.Cache
@@ -51,7 +51,6 @@ type FileTransferService struct {
 
 // NewFileTransfer creates a FileTransfer with given parameters.
 func NewFileTransfer(addr string, handler FileTransferHandler, downloadFileHandler DownloadFileHandler, waitNum int) *FileTransfer {
-
 	cachedTokens, _ := lru.New(waitNum)
 
 	fi := &FileTransfer{
@@ -73,8 +72,8 @@ func (s *Server) EnableFileTransfer(serviceName string, fileTransfer *FileTransf
 	if serviceName == "" {
 		serviceName = share.SendFileServiceName
 	}
-	fileTransfer.Start()
-	s.RegisterName(serviceName, fileTransfer.service, "")
+	_ = fileTransfer.Start()
+	_ = s.RegisterName(serviceName, fileTransfer.service, "")
 }
 
 func (s *FileTransferService) TransferFile(ctx context.Context, args *share.FileTransferArgs, reply *share.FileTransferReply) error {
@@ -87,6 +86,9 @@ func (s *FileTransferService) TransferFile(ctx context.Context, args *share.File
 	*reply = share.FileTransferReply{
 		Token: token,
 		Addr:  s.FileTransfer.Addr,
+	}
+	if s.FileTransfer.AdvertiseAddr != "" {
+		reply.Addr = s.FileTransfer.AdvertiseAddr
 	}
 
 	s.FileTransfer.cachedTokens.Add(string(token), &tokenInfo{token, args})
@@ -192,7 +194,6 @@ func (s *FileTransfer) start() error {
 			}
 
 		}
-
 	}
 }
 

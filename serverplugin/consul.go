@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/docker/libkv"
-	"github.com/docker/libkv/store"
-	"github.com/docker/libkv/store/consul"
 	metrics "github.com/rcrowley/go-metrics"
+	"github.com/rpcxio/libkv"
+	"github.com/rpcxio/libkv/store"
+	"github.com/rpcxio/libkv/store/consul"
 	"github.com/smallnest/rpcx/log"
 )
 
@@ -109,7 +109,7 @@ func (p *ConsulRegisterPlugin) Start() error {
 							for key, value := range extra {
 								v.Set(key, value)
 							}
-							p.kv.Put(nodePath, []byte(v.Encode()), &store.WriteOptions{TTL: p.UpdateInterval * 2})
+							_ = p.kv.Put(nodePath, []byte(v.Encode()), &store.WriteOptions{TTL: p.UpdateInterval * 2})
 						}
 					}
 				}
@@ -143,7 +143,7 @@ func (p *ConsulRegisterPlugin) Stop() error {
 			continue
 		}
 		if exist {
-			p.kv.Delete(nodePath)
+			_ = p.kv.Delete(nodePath)
 			log.Infof("delete path %s", nodePath, err)
 		}
 	}
@@ -226,6 +226,9 @@ func (p *ConsulRegisterPlugin) RegisterFunction(serviceName, fname string, fn in
 }
 
 func (p *ConsulRegisterPlugin) Unregister(name string) (err error) {
+	if len(p.Services) == 0 {
+		return nil
+	}
 	if strings.TrimSpace(name) == "" {
 		err = errors.New("Unregister service `name` can't be empty")
 		return

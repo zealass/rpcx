@@ -21,7 +21,7 @@ type NacosRegisterPlugin struct {
 	// nacos server config
 	ServerConfig []constant.ServerConfig
 	Cluster      string
-	Tenant       string
+	Weight       float64
 
 	// Registered services
 	Services []string
@@ -101,7 +101,7 @@ func (p *NacosRegisterPlugin) Register(name string, rcvr interface{}, metadata s
 		ServiceName: name,
 		Metadata:    meta,
 		ClusterName: p.Cluster,
-		Tenant:      p.Tenant,
+		Weight:      p.Weight,
 		Enable:      true,
 		Healthy:     true,
 		Ephemeral:   true,
@@ -123,6 +123,10 @@ func (p *NacosRegisterPlugin) RegisterFunction(serviceName, fname string, fn int
 }
 
 func (p *NacosRegisterPlugin) Unregister(name string) (err error) {
+	if len(p.Services) == 0 {
+		return nil
+	}
+
 	if strings.TrimSpace(name) == "" {
 		return errors.New("Unregister service `name` can't be empty")
 	}
